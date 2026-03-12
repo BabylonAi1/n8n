@@ -1,0 +1,51 @@
+{
+  "name": "SwanArt - Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "err-node-01",
+      "name": "🚨 Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $input.first().json;\n\nconst workflowName = err.workflow?.name || 'غير معروف';\nconst nodeName     = err.execution?.lastNodeExecuted || 'غير معروف';\nconst errorMsg     = err.execution?.error?.message || 'لا يوجد تفاصيل';\nconst errorStack   = err.execution?.error?.stack || '';\nconst execId       = err.execution?.id || '';\nconst execUrl      = `https://babylonai.me/workflow/${err.workflow?.id}/executions/${execId}`;\n\n// أول 300 حرف من الـ stack trace\nconst stackShort = errorStack.substring(0, 300).replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst text = [\n  `🚨 <b>خطأ في الـ Workflow</b>`,\n  `━━━━━━━━━━━━━━━━━━━━`,\n  `📋 <b>الـ Workflow:</b> ${workflowName}`,\n  `🔴 <b>العقدة الأخيرة:</b> ${nodeName}`,\n  `❌ <b>الخطأ:</b> ${errorMsg}`,\n  stackShort ? `\\n<pre>${stackShort}</pre>` : '',\n  `━━━━━━━━━━━━━━━━━━━━`,\n  `🔗 <a href=\"${execUrl}\">عرض التنفيذ</a>`\n].filter(Boolean).join('\\n');\n\nconst telegramBody = JSON.stringify({\n  chat_id: '-5006780541',\n  text: text,\n  parse_mode: 'HTML',\n  disable_web_page_preview: true\n});\n\nreturn [{ json: { telegramBody, workflowName, nodeName, errorMsg } }];"
+      },
+      "id": "err-node-02",
+      "name": "📋 Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.telegramBody }}"
+      },
+      "id": "err-node-03",
+      "name": "📤 Send to Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    }
+  ],
+  "connections": {
+    "🚨 Error Trigger": {
+      "main": [[{ "node": "📋 Format Error", "type": "main", "index": 0 }]]
+    },
+    "📋 Format Error": {
+      "main": [[{ "node": "📤 Send to Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

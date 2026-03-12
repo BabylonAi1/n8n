@@ -1,0 +1,5 @@
+{
+  "last_order_number": 999,
+  "prefix": "#",
+  "note": "الرقم التالي سيكون last_order_number + 1، أي #1000"
+}

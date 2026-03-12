@@ -1,0 +1,224 @@
+{
+  "name": "SwanArt - معالجة الطلبات",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "sw-node-01",
+      "name": "📩 Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "swanart-orders-wh",
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "SwanArt Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const globalData = $getWorkflowStaticData('global');\nconst message = $input.first().json.message || $input.first().json.channel_post;\n\nif (!message) return [];\n\n// فقط من مجموعة الوكلاء\nconst chatId = String(message.chat?.id || '');\nif (chatId !== '-5006780541') return [];\nif (message.from?.is_bot) return [];\n\nconst mediaGroupId = message.media_group_id;\nconst caption = message.caption || message.text || '';\nconst fromUser = message.from || {};\nconst messageId = message.message_id;\n\nif (!globalData.albums) globalData.albums = {};\nconst now = Date.now();\n\n// تنظيف الألبومات القديمة (أكثر من دقيقتين)\nfor (const key of Object.keys(globalData.albums)) {\n  if (now - (globalData.albums[key].createdAt || 0) > 120000) {\n    delete globalData.albums[key];\n  }\n}\n\n// رسالة نصية بدون صور\nif (!mediaGroupId) {\n  if (!caption.trim()) return [];\n  return [{ json: {\n    isAlbum: false, mediaArray: [], caption,\n    chatId, fromUser, messageId, mediaGroupId: null\n  }}];\n}\n\n// أول صورة في الألبوم → خزّن وتابع للـ Wait\nif (!globalData.albums[mediaGroupId]) {\n  const photo = message.photo ? message.photo[message.photo.length - 1] : null;\n  globalData.albums[mediaGroupId] = {\n    photos: photo ? [{ type: 'photo', media: photo.file_id }] : [],\n    caption, chatId, fromUser,\n    firstMessageId: messageId,\n    createdAt: now, processed: false\n  };\n  return [{ json: { mediaGroupId, chatId } }];\n}\n\n// صور إضافية → أضفها فقط وأوقف التنفيذ\nconst album = globalData.albums[mediaGroupId];\nconst photo = message.photo ? message.photo[message.photo.length - 1] : null;\nif (photo) album.photos.push({ type: 'photo', media: photo.file_id });\nif (caption && !album.caption) album.caption = caption;\nreturn [];"
+      },
+      "id": "sw-node-02",
+      "name": "📦 Album Accumulator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "unit": "seconds",
+        "amount": 3
+      },
+      "id": "sw-node-03",
+      "name": "⏳ Wait 3s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [680, 300],
+      "webhookId": "swanart-wait-wh"
+    },
+    {
+      "parameters": {
+        "jsCode": "const globalData = $getWorkflowStaticData('global');\nconst input = $input.first().json;\nconst mediaGroupId = input.mediaGroupId;\nconst chatId = input.chatId || '-5006780541';\n\nconst album = mediaGroupId ? globalData.albums?.[mediaGroupId] : null;\n\n// منع التكرار\nif (album?.processed) return [];\nif (album) album.processed = true;\n\n// توليد رقم الطلب\nif (!globalData.lastOrderNumber) globalData.lastOrderNumber = 999;\nglobalData.lastOrderNumber += 1;\nconst orderId = '#' + globalData.lastOrderNumber;\n\nconst caption = album?.caption || input.caption || '';\nconst fromUser = album?.fromUser || input.fromUser || {};\nconst firstMessageId = album?.firstMessageId || input.messageId;\n\nif (!caption.trim()) return [];\n\nconst firstName = fromUser.first_name || '';\nconst lastName = fromUser.last_name ? ' ' + fromUser.last_name : '';\nconst agentName = (firstName + lastName).trim() || 'غير محدد';\n\nreturn [{ json: {\n  orderId, caption, chatId,\n  agentName, fromUser, firstMessageId,\n  mediaGroupId\n}}];"
+      },
+      "id": "sw-node-04",
+      "name": "🔢 Album Reader",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const albumData = $('🔢 Album Reader').first().json;\nconst caption = albumData.caption || '';\n\nconst prompt = `أنت مساعد متخصص في استخراج بيانات طلبات المبيعات من النصوص العربية.\\n\\nاستخرج بيانات الطلب من النص التالي.\\n\\nقواعد صارمة:\\n- أعد JSON فقط، بدون أي نصوص تمهيدية أو ختامية، وبدون علامات json أو تنسيق markdown.\\n- أي حقل غير موجود في النص اكتب قيمته: \\\"غير مذكور\\\".\\n- في حقل القياس: استبدل أي رمز (*) بالحرف (x).\\n\\nالحقول المطلوبة:\\n{\\\"اسم_الزبون\\\": \\\"\\\", \\\"العنوان\\\": \\\"\\\", \\\"رقم_الهاتف\\\": \\\"\\\", \\\"عدد_اللوحات\\\": \\\"\\\", \\\"القياس\\\": \\\"\\\", \\\"نوع_الاطار\\\": \\\"\\\", \\\"السعر\\\": \\\"\\\", \\\"ملاحظات_التصميم\\\": \\\"\\\", \\\"نوع_الطلب\\\": \\\"\\\"}\\n\\nقواعد نوع_الطلب:\\n- كلمة استبدال أو تبديل → \\\"استبدال 🔄\\\"\\n- عدا ذلك → \\\"طلب جديد 🆕\\\"\\n\\nقواعد السعر العراقي:\\n- أرقام صغيرة (40, 65, 120) تعني الآلاف → \\\"40,000\\\"\\n- 40 الف → \\\"40,000\\\"\\n\\nالنص:\\n${caption}`;\n\nconst geminiBody = JSON.stringify({\n  contents: [{ parts: [{ text: prompt }] }],\n  generationConfig: { temperature: 0.1 }\n});\n\nreturn [{ json: { ...albumData, geminiBody } }];"
+      },
+      "id": "sw-node-05",
+      "name": "✏️ Build AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={{ $vars.GEMINI_API_KEY }}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.geminiBody }}"
+      },
+      "id": "sw-node-06",
+      "name": "🤖 Gemini AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// قراءة رد Gemini\nconst geminiRaw = $input.first().json;\nlet rawText = geminiRaw.candidates?.[0]?.content?.parts?.[0]?.text\n  || geminiRaw.text || geminiRaw.output || '';\n\n// تنظيف markdown\nrawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();\n\n// تحليل JSON\nlet fields = {};\ntry {\n  fields = JSON.parse(rawText);\n} catch (e) {\n  const match = rawText.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { fields = JSON.parse(match[0]); } catch (e2) {} }\n}\n\n// دالة التنظيف (تمنع أخطاء Telegram HTML)\nfunction sanitize(v) {\n  if (typeof v !== 'string') return String(v || 'غير مذكور');\n  return v.replace(/\\*/g, 'x').replace(/[_<>`\\\\]/g, '').trim() || 'غير مذكور';\n}\n\nconst f = {\n  'اسم_الزبون':      sanitize(fields['اسم_الزبون']),\n  'العنوان':          sanitize(fields['العنوان']),\n  'رقم_الهاتف':      sanitize(fields['رقم_الهاتف']),\n  'عدد_اللوحات':     sanitize(fields['عدد_اللوحات']),\n  'القياس':           sanitize(fields['القياس']),\n  'نوع_الاطار':      sanitize(fields['نوع_الاطار']),\n  'السعر':            sanitize(fields['السعر']),\n  'ملاحظات_التصميم': sanitize(fields['ملاحظات_التصميم']),\n  'نوع_الطلب':       sanitize(fields['نوع_الطلب'])\n};\n\n// جلب بيانات الطلب من Album Reader\nconst ad = $('🔢 Album Reader').first().json;\nconst { orderId, agentName, chatId, firstMessageId } = ad;\n\nconst date = new Date().toLocaleDateString('ar-IQ', {\n  day: '2-digit', month: '2-digit', year: 'numeric'\n});\n\n// الحقول الناقصة\nconst missingFields = Object.entries(f)\n  .filter(([k, v]) => v === 'غير مذكور').map(([k]) => k);\nconst hasMissingFields = missingFields.length > 0;\n\n// نص الرسالة بصيغة HTML\nconst msgText = [\n  `<b>${f['نوع_الطلب']} — ${orderId}</b>`,\n  `━━━━━━━━━━━━━━━━━━━━`,\n  `👤 <b>الزبون:</b> ${f['اسم_الزبون']}`,\n  `📍 <b>العنوان:</b> ${f['العنوان']}`,\n  `📞 <b>الهاتف:</b> ${f['رقم_الهاتف']}`,\n  `🖼 <b>عدد اللوحات:</b> ${f['عدد_اللوحات']}`,\n  `📐 <b>القياس:</b> ${f['القياس']}`,\n  `🪟 <b>الإطار:</b> ${f['نوع_الاطار']}`,\n  `💰 <b>السعر:</b> ${f['السعر']}`,\n  `✏️ <b>ملاحظات:</b> ${f['ملاحظات_التصميم']}`,\n  `━━━━━━━━━━━━━━━━━━━━`,\n  `👨‍💼 <b>الوكيل:</b> ${agentName}`,\n  `📅 <b>التاريخ:</b> ${date}`,\n  `⏳ <b>الحالة:</b> بانتظار استلام مصمم...`\n].join('\\n');\n\n// بناء body إرسال التيليكرام\nconst sendBody = JSON.stringify({\n  chat_id: chatId,\n  text: msgText,\n  parse_mode: 'HTML',\n  reply_to_message_id: firstMessageId,\n  reply_markup: {\n    inline_keyboard: [[\n      { text: '👨‍🎨 استلام التصميم', callback_data: 'take_design' },\n      { text: '📦 تم التجهيز', callback_data: 'order_ready' }\n    ]]\n  }\n});\n\n// بيانات الـ Warning (في حال نقص)\nconst warningBody = hasMissingFields ? JSON.stringify({\n  chat_id: chatId,\n  text: `⚠️ تنبيه — الطلب ${orderId}\\nالحقول الناقصة: ${missingFields.join(' | ')}\\nالرجاء إرسال التفاصيل الناقصة.`,\n  parse_mode: 'HTML',\n  reply_to_message_id: firstMessageId\n}) : '';\n\n// بيانات Google Sheets\nconst sheetsData = {\n  'رقم الطلب':        orderId,\n  'التاريخ':           date,\n  'اسم الوكيل':       agentName,\n  'اسم الزبون':       f['اسم_الزبون'],\n  'رقم الهاتف':       f['رقم_الهاتف'],\n  'العنوان':            f['العنوان'],\n  'عدد اللوحات':      f['عدد_اللوحات'],\n  'القياس':             f['القياس'],\n  'نوع الإطار':        f['نوع_الاطار'],\n  'السعر':              f['السعر'],\n  'ملاحظات التصميم':  f['ملاحظات_التصميم'],\n  'نوع الطلب':         f['نوع_الطلب'],\n  'الحالة':             'بانتظار'\n};\n\nreturn [{ json: {\n  ...sheetsData,\n  orderId, chatId, firstMessageId, agentName,\n  msgText, sendBody, warningBody, hasMissingFields\n}}];"
+      },
+      "id": "sw-node-07",
+      "name": "🔨 Parse & Sanitize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "11MBMWujPlMWzab92JjbG5PFhxVgN88nibS7WoevDQYI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "عذراء",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        }
+      },
+      "id": "sw-node-08",
+      "name": "📊 Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1780, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('🔨 Parse & Sanitize').first().json.sendBody }}"
+      },
+      "id": "sw-node-09",
+      "name": "📤 Send Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "missing-check",
+              "leftValue": "={{ $('🔨 Parse & Sanitize').first().json.hasMissingFields }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "sw-node-10",
+      "name": "❓ Missing Fields?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('🔨 Parse & Sanitize').first().json.warningBody }}"
+      },
+      "id": "sw-node-11",
+      "name": "⚠️ Send Warning",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2440, 200]
+    }
+  ],
+  "connections": {
+    "📩 Telegram Trigger": {
+      "main": [[{ "node": "📦 Album Accumulator", "type": "main", "index": 0 }]]
+    },
+    "📦 Album Accumulator": {
+      "main": [[{ "node": "⏳ Wait 3s", "type": "main", "index": 0 }]]
+    },
+    "⏳ Wait 3s": {
+      "main": [[{ "node": "🔢 Album Reader", "type": "main", "index": 0 }]]
+    },
+    "🔢 Album Reader": {
+      "main": [[{ "node": "✏️ Build AI Prompt", "type": "main", "index": 0 }]]
+    },
+    "✏️ Build AI Prompt": {
+      "main": [[{ "node": "🤖 Gemini AI", "type": "main", "index": 0 }]]
+    },
+    "🤖 Gemini AI": {
+      "main": [[{ "node": "🔨 Parse & Sanitize", "type": "main", "index": 0 }]]
+    },
+    "🔨 Parse & Sanitize": {
+      "main": [[{ "node": "📊 Google Sheets", "type": "main", "index": 0 }]]
+    },
+    "📊 Google Sheets": {
+      "main": [[{ "node": "📤 Send Order", "type": "main", "index": 0 }]]
+    },
+    "📤 Send Order": {
+      "main": [[{ "node": "❓ Missing Fields?", "type": "main", "index": 0 }]]
+    },
+    "❓ Missing Fields?": {
+      "main": [
+        [{ "node": "⚠️ Send Warning", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

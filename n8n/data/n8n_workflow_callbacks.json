@@ -1,0 +1,79 @@
+{
+  "name": "SwanArt - معالجة الأزرار",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["callback_query"],
+        "additionalFields": {}
+      },
+      "id": "cb-node-01",
+      "name": "🔔 Trigger: Callbacks",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "swanart-callbacks-wh",
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "SwanArt Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cbQuery = $input.first().json.callback_query;\nif (!cbQuery) return [];\n\nconst cbData   = cbQuery.data || '';\nconst fromUser = cbQuery.from || {};\nconst msg      = cbQuery.message || {};\nconst messageId = msg.message_id;\nconst chatId    = String(msg.chat?.id || '-5006780541');\nconst queryId   = cbQuery.id;\nconst plainText = msg.text || '';\n\n// اسم من ضغط الزر\nconst presserName = (fromUser.first_name || '') +\n  (fromUser.last_name ? ' ' + fromUser.last_name : '');\n\n// إعادة بناء HTML من النص العادي\nfunction toHtml(text) {\n  const lines = text.split('\\n');\n  return lines.map((line, i) => {\n    if (i === 0) return '<b>' + line + '</b>'; // السطر الأول دائماً عريض\n    // أضف bold للحقول: emoji + نص + نقطتين\n    return line.replace(\n      /^([\\p{Emoji_Presentation}\\p{Extended_Pictographic}\\u200d]+\\s*)([^:]+:)/u,\n      '$1<b>$2</b>'\n    );\n  }).join('\\n');\n}\n\nlet htmlText = toHtml(plainText);\nlet newReplyMarkup;\nlet action = cbData;\n\nif (cbData === 'take_design') {\n  // استبدل سطر الحالة\n  htmlText = htmlText.replace(\n    /⏳ <b>الحالة:<\\/b> بانتظار استلام مصمم\\.\\.\\./,\n    `⏳ <b>الحالة:</b> 👨‍🎨 قيد التصميم بواسطة: ${presserName}`\n  );\n  if (!htmlText.includes('قيد التصميم')) {\n    // fallback: استبدل آخر سطر يحتوي كلمة الحالة\n    const lines = htmlText.split('\\n');\n    for (let i = lines.length - 1; i >= 0; i--) {\n      if (lines[i].includes('الحالة')) {\n        lines[i] = `⏳ <b>الحالة:</b> 👨‍🎨 قيد التصميم بواسطة: ${presserName}`;\n        break;\n      }\n    }\n    htmlText = lines.join('\\n');\n  }\n  // أبقِ زر التجهيز فقط\n  newReplyMarkup = { inline_keyboard: [[{ text: '📦 تم التجهيز', callback_data: 'order_ready' }]] };\n\n} else if (cbData === 'order_ready') {\n  const lines = htmlText.split('\\n');\n  for (let i = lines.length - 1; i >= 0; i--) {\n    if (lines[i].includes('الحالة')) {\n      lines[i] = `✅ <b>الحالة:</b> تم التجهيز والتسليم للتوصيل بواسطة: ${presserName}`;\n      break;\n    }\n  }\n  htmlText = lines.join('\\n');\n  newReplyMarkup = { inline_keyboard: [] }; // حذف جميع الأزرار\n\n} else {\n  return []; // callback غير معروف\n}\n\n// body إجابة Callback (لإخفاء التحميل)\nconst answerBody = JSON.stringify({ callback_query_id: queryId });\n\n// body تعديل الرسالة\nconst editBody = JSON.stringify({\n  chat_id:    chatId,\n  message_id: messageId,\n  text:       htmlText,\n  parse_mode: 'HTML',\n  reply_markup: newReplyMarkup\n});\n\nreturn [{ json: { queryId, chatId, messageId, answerBody, editBody, action } }];"
+      },
+      "id": "cb-node-02",
+      "name": "📋 Parse Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/answerCallbackQuery",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.answerBody }}"
+      },
+      "id": "cb-node-03",
+      "name": "✅ Answer Callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/editMessageText",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('📋 Parse Callback').first().json.editBody }}"
+      },
+      "id": "cb-node-04",
+      "name": "✏️ Edit Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300]
+    }
+  ],
+  "connections": {
+    "🔔 Trigger: Callbacks": {
+      "main": [[{ "node": "📋 Parse Callback", "type": "main", "index": 0 }]]
+    },
+    "📋 Parse Callback": {
+      "main": [[{ "node": "✅ Answer Callback", "type": "main", "index": 0 }]]
+    },
+    "✅ Answer Callback": {
+      "main": [[{ "node": "✏️ Edit Message", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
